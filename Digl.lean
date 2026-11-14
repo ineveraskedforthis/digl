@@ -80,8 +80,6 @@ structure ProgramState where
 -- abbrev M_Bool := StateM WindowStateManaged MIO_Bool
 
 -- abbrev M' (t) := StateT WindowStateManaged Id (StateT GLFWwindow_ptr IO t)
-#check WP
-
 
 structure VerificationPair (α) where
   execution : StateT ProgramState IO α
@@ -99,7 +97,6 @@ structure VerificationPair (α) where
 --   model := x.model >>= fun s => (f s).model
 -- }
 
-#check StateT.run
 
 def VerificationPair.run_model
   {α : Type}
@@ -121,10 +118,6 @@ instance VerificationPair.IsMonad : Monad VerificationPair := {
     model := x.model >>= fun s => (f s).model
   }
 }
-
-#check WP
-#check PredTrans
-#check PostCond
 
 namespace ImGui
 
@@ -165,8 +158,6 @@ def make_program_state (w : GLFWwindow_ptr) : ProgramState := {
   }
 }
 
-#check StateT.modifyGet
-#check StateT.set
 
 def Window
   (label : String)
