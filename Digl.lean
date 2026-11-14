@@ -245,6 +245,14 @@ def ModSelect
     | none => OptionT.fail
     | some x => pure x
 
+def PushToken
+  (token : String)
+  (acc : List String)
+:
+  List String
+:=
+  if token.length == 0 then acc else token :: acc
+
 def SplitTokens
   (s : String)
   (current_position : String.Pos s)
@@ -259,31 +267,19 @@ def SplitTokens
     let current_character := current_position.get h
     if current_character == '"' then
       if reading_name then
-        if acc_token.length ≠ 0 then
-          SplitTokens s (current_position.next h) "" (acc_token :: acc) false
-        else
-          SplitTokens s (current_position.next h) "" (acc) false
+          SplitTokens s (current_position.next h) "" (PushToken acc_token acc) false
       else
-        if acc_token.length ≠ 0 then
-          SplitTokens s (current_position.next h) "" (acc_token :: acc) true
-        else
-          SplitTokens s (current_position.next h) "" (acc) true
+          SplitTokens s (current_position.next h) "" (PushToken acc_token acc) true
     else
       if reading_name then
         SplitTokens s (current_position.next h) (acc_token.push current_character) (acc) reading_name
       else
         if current_character.isWhitespace then
-          if acc_token.length ≠ 0 then
-            SplitTokens s (current_position.next h) "" (acc_token :: acc) reading_name
-          else
-            SplitTokens s (current_position.next h) "" acc reading_name
+          SplitTokens s (current_position.next h) "" (PushToken acc_token acc) reading_name
         else
           SplitTokens s (current_position.next h) (acc_token.push current_character) acc reading_name
   else
-    if (acc_token.length ≠ 0) then
-      acc_token :: acc
-    else
-      acc
+    PushToken acc_token acc
   termination_by String.Pos.Raw.byteDistance current_position.offset s.rawEndPos
   decreasing_by
   repeat (
