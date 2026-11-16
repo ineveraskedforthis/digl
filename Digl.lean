@@ -5,6 +5,8 @@ import Lean
 import Std.WP
 import Std.Tactic.Do
 
+import Digl.Token
+import Digl.Script
 
 open Std.WP Lean.Order
 open Std.Do
@@ -55,6 +57,7 @@ structure Vic2Mod (m) [Monad m] where
   content_path : m System.FilePath
   user_dir : Option System.FilePath
   replace_path : List System.FilePath
+  sprite_types : Array V2_GFX.SpriteType
 
 structure Paths where
   v2_path : Option System.FilePath
@@ -69,10 +72,24 @@ structure ModelState where
 structure ErrorList where
   mod_description : List String
 
+structure SpritesFilter where
+  starts_with : String
+  frames : Nat
+
+structure FiltersCollection where
+  sprites : SpritesFilter := {
+    frames := 30
+    starts_with := ""
+  }
+
 structure ProgramState where
   window : GLFWwindow_ptr
   errors : ErrorList
   paths : Paths
+  filters : FiltersCollection := {
+
+  }
+
 
 -- def NothingModel (s : WindowState) : WindowState := s
 
@@ -187,10 +204,10 @@ def WindowIfElse
   (label : String)
   (w : ProgramState)
   (condition : ProgramState → Bool)
-  (content : (w : ProgramState) → (h : condition w = true) → IO ProgramState)
-  (content_else : (w : ProgramState) → (h : ¬ condition w = true) → IO ProgramState)
+  (content : (w : ProgramState) → (h : condition w) → IO ProgramState)
+  (content_else : (w : ProgramState) → (h : ¬ condition w) → IO ProgramState)
 : IO ProgramState := do
-  if h : condition w then
+  if h : decide (condition w) then
     ImGui._Begin label
     let w := ← content w h
     ImGui._End
@@ -236,61 +253,12 @@ def ModSelect
     | none => OptionT.fail
     | some x => pure x
 
-def PushToken
-  (token : String)
-  (acc : List String)
-:
-  List String
-:=
-  if token.length == 0 then acc else token :: acc
-
-def SplitTokens
-  (s : String)
-  (current_position : String.Pos s)
-  (acc_token : String)
-  (acc : List String)
-  (reading_name : Bool)
-:
-  List String
-:=
-  if h' : current_position < s.endPos then
-    have h : current_position ≠ s.endPos := by exact String.Pos.ne_endPos_of_lt h'
-    let current_character := current_position.get h
-    if current_character == '"' then
-      if reading_name then
-          SplitTokens s (current_position.next h) "" (PushToken acc_token acc) false
-      else
-          SplitTokens s (current_position.next h) "" (PushToken acc_token acc) true
-    else
-      if reading_name then
-        SplitTokens s (current_position.next h) (acc_token.push current_character) (acc) reading_name
-      else
-        if current_character.isWhitespace then
-          SplitTokens s (current_position.next h) "" (PushToken acc_token acc) reading_name
-        else
-          SplitTokens s (current_position.next h) (acc_token.push current_character) acc reading_name
-  else
-    PushToken acc_token acc
-  termination_by String.Pos.Raw.byteDistance current_position.offset s.rawEndPos
-  decreasing_by
-  repeat (
-    rw [String.Pos.offset_next]
-    rw [String.Pos.Raw.byteDistance_eq]
-    rw [String.Pos.Raw.byteIdx_add_char]
-    rw [String.Pos.Raw.byteDistance_eq]
-    apply Nat.sub_lt_sub_left
-    exact String.Pos.Raw.lt_iff.mp h'
-    have char_gt_zero (c : Char) : 0 < c.utf8Size := by
-      have temp := c.utf8Size_eq
-      grind
-    apply Nat.lt_add_of_pos_right
-    apply char_gt_zero
-  )
 
   -- rw [Nat.sub_add_eq]
 
-def test_string := "I play \"Project Alice\"\nSometimes..."
-#eval SplitTokens test_string test_string.startPos "" [] false
+-- def test_string := "I play \"Project Alice\"\nSometimes...\n\r# it's quite fun..."
+-- #eval SplitTokens test_string test_string.startPos "" #[] false false
+
 
 inductive ModInfoLHS where
 | name : ModInfoLHS
@@ -303,10 +271,12 @@ inductive ModInfoTokenKind where
 | eq : ModInfoTokenKind
 | rhs : ModInfoTokenKind
 
-def ExtractModInfo (data : List String) (c : List ModInfoTokenKind) (acc : Vic2Mod Option) : Vic2Mod Option :=
+def ExtractModInfo (data : List RawToken) (c : List ModInfoTokenKind) (acc : Vic2Mod Option) : Vic2Mod Option :=
   match data with
   | [] => acc
-  | token :: tail =>
+  | RawToken.Comment _ :: tail =>
+    ExtractModInfo tail c acc
+  | RawToken.Signifier token :: tail =>
     if token = "=" then
       ExtractModInfo tail (ModInfoTokenKind.eq :: c) acc
     else
@@ -335,6 +305,7 @@ def ExtractModInfo (data : List String) (c : List ModInfoTokenKind) (acc : Vic2M
 
 
 def test_descritption := "
+# random long comment which makes  things more difficult
 name = \"Random Mod name\"
 path = \"mod/random_mod/actual_folder\"
 user_dir = \"RM\"
@@ -343,14 +314,17 @@ replace_path = \"events\"
 replace_path = \"decisions\"
 "
 
-def tokens := SplitTokens test_descritption test_descritption.startPos "" [] false
+def tokens := SplitTokens test_descritption test_descritption.startPos "" #[] false false
+-- #eval tokens
 
-def parsed := ExtractModInfo (tokens.reverse) [] {
+
+def parsed := ExtractModInfo (tokens.toList) [] {
   mod_path := "something"
   name := none
   content_path := none
   user_dir := none
   replace_path := []
+  sprite_types := #[]
 }
 
 #eval parsed.name
@@ -363,15 +337,46 @@ def parsed := ExtractModInfo (tokens.reverse) [] {
 def ParseModDescriptor
   (s : String) (mod : System.FilePath)
 : Vic2Mod Option :=
-  let tokens := SplitTokens s s.startPos "" [] false
-  ExtractModInfo (tokens.reverse) [] {
+  let tokens := SplitTokens s s.startPos "" #[] false false
+  ExtractModInfo (tokens.toList) [] {
     mod_path := mod
     name := none
     content_path := none
     user_dir := none
     replace_path := []
+    sprite_types := #[]
   }
 
+def ExtractGFX_file
+  (file_absolute_path : System.FilePath)
+:
+  IO (Array V2_GFX.SpriteType)
+:= do
+  IO.println file_absolute_path
+  if ¬ (← file_absolute_path.isDir) then
+    IO.println "Open: Path is not a directory."
+    if file_absolute_path.extension = some "gfx" then
+      let file := ←IO.FS.readFile file_absolute_path
+      let sprites := V2_GFX.ParseString file
+      IO.println (toString sprites.size ++ " sprited were detected")
+      pure sprites
+    else
+      IO.println "Skip: Path is not a gfx file."
+      pure #[]
+  else
+    IO.println "Skip: Path is a directory."
+    pure #[]
+
+def ExtractGFX_content_path (content_absolute_path : System.FilePath) : IO (Array V2_GFX.SpriteType) := do
+  IO.println ("Extract gfx from " ++ (content_absolute_path / "interface").toString)
+  let interface_path := content_absolute_path / "interface"
+  if ←interface_path.isDir then
+    IO.println "Valid directory"
+    let files := ←interface_path.walkDir  (fun x => pure (x == interface_path))
+    files.flatMapM ExtractGFX_file
+  else
+    IO.println "Invalid directory"
+    pure #[]
 
 
 def ValidateVic2ModDescription
@@ -390,6 +395,7 @@ def ValidateVic2ModDescription
       content_path := path
       user_dir := v.user_dir
       replace_path := v.replace_path
+      sprite_types := #[]
     }
 
 def ReadModDescriptor (p : Option System.FilePath) : ExceptT (List ModInfoLHS) IO (Vic2Mod Id) := do
@@ -411,6 +417,12 @@ def ModDescriptorErrors (l : List ModInfoLHS) (acc : List String) : List String 
       ModDescriptorErrors tail ("Missing mod path" :: acc)
     | _ => acc
 
+
+def LoadSprites (game_path : System.FilePath) (v : Vic2Mod Id) : IO (Vic2Mod Id) := do
+  IO.println "Load sprites function"
+  pure {v with sprite_types := ←ExtractGFX_content_path (game_path / v.content_path.run) }
+
+
 def ShowMods (w : ProgramState) (_ : w.paths.v2_path.isSome = true) : IO ProgramState := do
   let result := ←w.paths.local_mods.foldrM ModSelect none
   match ←ReadModDescriptor result with
@@ -419,24 +431,38 @@ def ShowMods (w : ProgramState) (_ : w.paths.v2_path.isSome = true) : IO Program
   | Except.ok v =>
     pure { w with paths.selected_mod := v }
 
+abbrev ValidModSelection (w : ProgramState) : Bool := w.paths.selected_mod.isSome = true ∧ w.paths.v2_path.isSome = true
+abbrev ValidModSelection_Prop (w : ProgramState) : Prop := w.paths.selected_mod.isSome = true ∧ w.paths.v2_path.isSome = true
+
 
 def ModDescription
   (w : ProgramState)
-  (h : w.paths.selected_mod.isSome = true)
+  (h : ValidModSelection w)
 :
   IO ProgramState
 := do
-  let desc := w.paths.selected_mod.get h
+  have valid : ValidModSelection_Prop w := by
+    exact Bool.and_eq_true_iff.mp h
+  let desc := w.paths.selected_mod.get valid.1
   ImGui._Text desc.name
+  let mut load_sprites : Bool := false
+  if ← ImGui._Button "Load sprites" then
+    load_sprites := true
   ImGui._Text ("Content folder path: " ++ desc.content_path.toString)
   ImGui._Text ("Path to the .mod file: " ++ desc.mod_path.toString)
   ImGui._Text "Replaced paths: "
   desc.replace_path.forM (fun x => ImGui._Text x.toString )
-  pure w
+
+  if load_sprites then
+    IO.println "Load sprites"
+    let updated_desc := ←(LoadSprites (w.paths.v2_path.get valid.2) desc)
+    pure {w with paths.selected_mod := some updated_desc }
+  else
+    pure w
 
 def ModDescriptionErrors
   (w : ProgramState)
-  (_ : ¬w.paths.selected_mod.isSome = true)
+  (_ : ¬(ValidModSelection w))
 :
   IO ProgramState
 := do
@@ -444,6 +470,44 @@ def ModDescriptionErrors
   w.errors.mod_description.forM (fun x => ImGui._Text x )
   pure w
 
+def SpriteDescription (s : V2_GFX.SpriteType) (w : ProgramState)  : IO ProgramState := do
+  if h: s.name.isSome ∧ s.frames.isSome then
+    let name := s.name.get h.1
+    let frames := s.frames.get h.2
+    if ¬ (name.startsWith w.filters.sprites.starts_with ∧ frames ≥ w.filters.sprites.frames) then
+      pure w
+    else
+      if h : s.name.isSome then
+        ImGui._Text ("Name: " ++ (s.name.get h))
+      else
+        ImGui._Text ("Name: Unknown")
+      if h : s.texture_path.isSome then
+        ImGui._Text ("Path: " ++ (s.texture_path.get h).toString)
+      else
+        ImGui._Text ("Path: Unknown")
+      if h : s.frames.isSome then
+        ImGui._Text ("Frames: " ++ toString (s.frames.get h))
+      else
+        ImGui._Text ("Frames: default (1)")
+      pure w
+  else
+    pure w
+
+
+
+def SpritesList (w : ProgramState) : IO ProgramState := do
+  let desc := w.paths.selected_mod
+  ImGui._Text "Sprites list"
+  match desc with
+  | none =>
+    ImGui._Text "Select a mod."
+    pure w
+  | some d =>
+    if d.sprite_types.size = 0 then
+      ImGui._Text "There are no sprites in the mod or you haven't loaded them."
+      pure w
+    else
+      d.sprite_types.foldrM (SpriteDescription) w
 
 def ChooseFolder (w : ProgramState) : IO ProgramState := do
   let button_result := ←ImGui._Button "Choose V2 folder"
@@ -472,7 +536,8 @@ def DrawWindow (w : ProgramState) : IO ProgramState := do
   -- gather computations into wio
   let w := ←Window "Path picker" w  ChooseFolder
   let w := ←WindowIf "Vic2 Mods" w _ ShowMods
-  let w := ←WindowIfElse "Selected mod" w _ ModDescription ModDescriptionErrors
+  let w := ←WindowIfElse "Selected mod" w ValidModSelection ModDescription ModDescriptionErrors
+  let w := ←Window "Sprites table" w SpritesList
 
   EndFrame
   SwapBuffers w.window
