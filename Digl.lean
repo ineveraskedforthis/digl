@@ -7,6 +7,8 @@ import Std.Tactic.Do
 
 import Digl.Token
 import Digl.Script
+import Digl.GL
+import Digl.ImGui
 
 open Std.WP Lean.Order
 open Std.Do
@@ -59,10 +61,16 @@ structure Vic2Mod (m) [Monad m] where
   replace_path : List System.FilePath
   sprite_types : Array V2_GFX.SpriteType
 
+structure ImageFile where
+  path : System.FilePath
+  image : @& Image.Ptr
+  texture_id : Int32
+
 structure Paths where
   v2_path : Option System.FilePath
   local_mods : Array System.FilePath
   selected_mod : Option (Vic2Mod Id)
+  selected_sprite : Option ImageFile
 
 
 structure ModelState where
@@ -139,23 +147,16 @@ instance VerificationPair.IsMonad : Monad VerificationPair := {
 namespace ImGui
 
 @[extern "imgui_begin"]
-opaque _Begin (s : String) : IO Unit
+opaque _Begin (s : @& String) : IO Unit
 @[extern "imgui_end"]
 opaque _End : IO Unit
 @[extern "imgui_text"]
-opaque _Text (s : String) : IO Unit
-
+opaque _Text (s : @& String) : IO Unit
 
 @[extern "imgui_button"]
-opaque _Button (s : String) : IO Bool
+opaque _Button (s : @& String) : IO Bool
 
 end ImGui
-
-namespace gl
-def GL_COLOR_BUFFER_BIT : UInt32 := 0x00004000
-@[extern "lean_glClear"]
-opaque Clear (mask : UInt32) : IO Unit
-end gl
 
 @[extern "lean_get_path"]
 opaque QueryPathString : IO String
@@ -165,6 +166,7 @@ def make_paths : Paths := {
   v2_path := none
   local_mods := Array.empty
   selected_mod := none
+  selected_sprite := none
 }
 
 def make_program_state (w : GLFWwindow_ptr) : ProgramState := {
@@ -470,6 +472,26 @@ def ModDescriptionErrors
   w.errors.mod_description.forM (fun x => ImGui._Text x )
   pure w
 
+def UploadImageToGPU (data : Image.Ptr) : IO Int32 := do
+  let tex := ←gl.GenTexture
+  gl.BindTexture gl.GL_TEXTURE_2D tex
+  gl.TexParameteri gl.GL_TEXTURE_2D gl.GL_TEXTURE_MIN_FILTER gl.GL_NEAREST
+  gl.TexParameteri gl.GL_TEXTURE_2D gl.GL_TEXTURE_MAG_FILTER gl.GL_NEAREST
+  gl.LoadImage data
+  pure tex
+
+def LoadSprite (w : ProgramState) (p : System.FilePath) : OptionT IO ImageFile := do
+  match w.paths.v2_path, w.paths.selected_mod with
+  | some to_v2, some mod =>
+    let data :=  (← (Image.Read (to_v2 / mod.content_path.run / p).toString))
+    pure {
+      path := mod.content_path.run / p
+      image := data
+      texture_id := ←UploadImageToGPU data
+    }
+  | _, _ => failure
+
+
 def SpriteDescription (s : V2_GFX.SpriteType) (w : ProgramState)  : IO ProgramState := do
   if h: s.name.isSome ∧ s.frames.isSome then
     let name := s.name.get h.1
@@ -477,11 +499,10 @@ def SpriteDescription (s : V2_GFX.SpriteType) (w : ProgramState)  : IO ProgramSt
     if ¬ (name.startsWith w.filters.sprites.starts_with ∧ frames ≥ w.filters.sprites.frames) then
       pure w
     else
-      if h : s.name.isSome then
-        ImGui._Text ("Name: " ++ (s.name.get h))
-      else
-        ImGui._Text ("Name: Unknown")
+      let mut selected_path : Option System.FilePath := none
       if h : s.texture_path.isSome then
+        if ←ImGui._Button ("Select " ++ name) then
+          selected_path := (s.texture_path.get h)
         ImGui._Text ("Path: " ++ (s.texture_path.get h).toString)
       else
         ImGui._Text ("Path: Unknown")
@@ -489,7 +510,11 @@ def SpriteDescription (s : V2_GFX.SpriteType) (w : ProgramState)  : IO ProgramSt
         ImGui._Text ("Frames: " ++ toString (s.frames.get h))
       else
         ImGui._Text ("Frames: default (1)")
-      pure w
+
+      if h : selected_path.isSome then
+        pure {w with paths.selected_sprite := ← LoadSprite w (selected_path.get h)}
+      else
+        pure w
   else
     pure w
 
@@ -509,6 +534,13 @@ def SpritesList (w : ProgramState) : IO ProgramState := do
     else
       d.sprite_types.foldrM (SpriteDescription) w
 
+def SpriteEditor (w : ProgramState) : IO ProgramState := do
+  match w.paths.selected_sprite with
+  | none => pure w
+  | some s =>
+    ImGui.DisplayImage s.texture_id (Image.Width s.image) (Image.Height s.image)
+    pure w
+
 def ChooseFolder (w : ProgramState) : IO ProgramState := do
   let button_result := ←ImGui._Button "Choose V2 folder"
   if button_result then
@@ -520,6 +552,7 @@ def ChooseFolder (w : ProgramState) : IO ProgramState := do
         v2_path := path
         local_mods := ←(GatherMods 2 mods_path)
         selected_mod := none
+        selected_sprite := none
       }
       errors := {
         mod_description := ["No mod description was selected"]
@@ -538,6 +571,7 @@ def DrawWindow (w : ProgramState) : IO ProgramState := do
   let w := ←WindowIf "Vic2 Mods" w _ ShowMods
   let w := ←WindowIfElse "Selected mod" w ValidModSelection ModDescription ModDescriptionErrors
   let w := ←Window "Sprites table" w SpritesList
+  let w := ←Window "Sprite editor" w SpriteEditor
 
   EndFrame
   SwapBuffers w.window

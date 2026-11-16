@@ -24,6 +24,7 @@
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
 
+#include "SOIL2.h"
 
 std::wstring open_path_selection_dialog() {
 	IFileOpenDialog* DIALOG;
@@ -154,24 +155,6 @@ GLFWwindow* init_glfw_window() {
 
 	glClearColor(1.f, 1.f, 1.f, 1.f);
 
-
-	// double last_time = glfwGetTime();
-	// while (!glfwWindowShouldClose(window)) {
-	// 	ImGui_ImplOpenGL3_NewFrame();
-	// 	ImGui_ImplGlfw_NewFrame();
-	// 	ImGui::NewFrame();
-
-	// 	ImGui::Begin("Hello lean4ik");
-	// 	ImGui::Text("Test");
-	// 	ImGui::End();
-
-
-	// 	ImGui::Render();
-	// 	ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-	// 	glfwSwapBuffers(window);
-	// 	glfwPollEvents();
-	// }
-
 	printf("%p\n", window);
 
 	return window;
@@ -193,33 +176,36 @@ void shutdown_glfw_window(GLFWwindow* window) {
 }
 
 
-static void GLFWwindow_finalize(void * obj) {
+static void generic_finalize(void * obj) {
 	fprintf(stdout, "Fin\n");
-	// shutdown_glfw_window (static_cast<GLFWwindow*> (obj));
 }
 
-static void GLFWwindow_foreach(void *, b_lean_obj_arg) {
+static void generic_foreach(void *, b_lean_obj_arg) {
 	fprintf(stdout, "For each\n");
 }
 
 
 static lean_external_class *glfw_window_class = NULL;
+static lean_external_class *image_class = NULL;
 
 
 extern "C" LEAN_EXPORT lean_object * init_lean_classes(lean_object *) {
 	fprintf(stdout, "Create classes\n");
+
 	glfw_window_class = lean_register_external_class(
-		&GLFWwindow_finalize,
-		&GLFWwindow_foreach
+		&generic_finalize,
+		&generic_foreach
 	);
-	fprintf(stdout, "GLFWwindow class created\n");
+	fprintf(stdout, "GLFWwindow class has been created\n");
+
+	image_class = lean_register_external_class(
+		&generic_finalize,
+		&generic_foreach
+	);
+	fprintf(stdout, "Image class has been created\n");
+
 	return lean_io_result_mk_ok(lean_box(0));
 }
-
-
-// static lean_external_class * g_GLFWwindow_class = nullptr;
-
-
 
 static inline lean_obj_res GLFWwindow_to_lean(GLFWwindow * s) {
 	fprintf(stdout, "Try to build lean object of window class\n");
@@ -233,10 +219,6 @@ static inline GLFWwindow* lean_to_GLFWwindow(b_lean_obj_arg s) {
 }
 
 extern "C" LEAN_EXPORT lean_obj_res lean_init_glfw_window() {
-	// auto window = glfwCreateWindow(1280, 960, "Lean4 Test", NULL, NULL);
-	// return init_glfw_window();
-	// return GLFWwindow_to_lean(window);
-
 	return GLFWwindow_to_lean(init_glfw_window());
 }
 extern "C" LEAN_EXPORT lean_obj_res lean_shutdown_glfw_window(lean_obj_arg w) {
@@ -244,11 +226,9 @@ extern "C" LEAN_EXPORT lean_obj_res lean_shutdown_glfw_window(lean_obj_arg w) {
 	return lean_io_result_mk_ok(lean_box(0));
 }
 extern "C" LEAN_EXPORT lean_obj_res lean_start_frame() {
-	// printf("New frame %d\n", ImGui::GetFrameCount());
 	ImGui_ImplOpenGL3_NewFrame();
 	ImGui_ImplGlfw_NewFrame();
 	ImGui::NewFrame();
-	// printf("New frame done\n");
 	return lean_io_result_mk_ok(lean_box(0));
 }
 extern "C" LEAN_EXPORT lean_obj_res lean_end_frame() {
@@ -261,27 +241,8 @@ extern "C" LEAN_EXPORT lean_obj_res lean_swap_buffers(lean_obj_arg w) {
 	return lean_io_result_mk_ok(lean_box(0));
 }
 extern "C" LEAN_EXPORT lean_obj_res lean_should_close(lean_obj_arg lean_w) {
-	// printf("Should close?\n");
-	// if (!lean_is_external(lean_w)) {
-		// printf("Not external!\n");
-	// } else {
-		// printf("External!\n");
-	// }
-
 	auto w  = (GLFWwindow*) (lean_get_external_data(lean_w));
-
-	// printf("%p\n", w);
-
 	auto result = glfwWindowShouldClose(w);
-
-	// printf("Retrieved\n");
-
-	// if (result) {
-	// 	printf("yes\n");
-	// } else {
-	// 	printf("no\n");
-	// }
-
 	return lean_io_result_mk_ok(lean_box(result));
 }
 
@@ -299,6 +260,7 @@ extern "C" LEAN_EXPORT lean_obj_res imgui_begin(b_lean_obj_arg label) {
 extern "C" LEAN_EXPORT lean_obj_res imgui_text(b_lean_obj_arg text) {
 	auto c_text = lean_string_cstr(text);
 	ImGui::Text("%s", c_text);
+
 	return lean_io_result_mk_ok(lean_box(0));
 }
 
@@ -331,4 +293,89 @@ extern "C" LEAN_EXPORT lean_obj_res lean_get_path() {
 	auto path_utf8 = conversions::w_to_u8(path);
 	auto lean_str = lean_mk_string(path_utf8.c_str());
 	return lean_io_result_mk_ok(lean_str);
+}
+
+struct image {
+	int32_t w;
+	int32_t h;
+	int32_t channels;
+	uint8_t* data;
+};
+extern "C" LEAN_EXPORT lean_obj_res lean_read_image(b_lean_obj_arg path) {
+	printf("Allocate image array");
+	auto c_text = lean_string_cstr(path);
+	auto img = new image;
+	img->data = SOIL_load_image(
+		c_text,
+		&img->w,
+		&img->h,
+		&img->channels,
+		SOIL_LOAD_AUTO
+	);
+	auto img_boxed =  lean_io_result_mk_ok(
+		lean_alloc_external(image_class, img)
+	);
+
+	return img_boxed;
+}
+extern "C" LEAN_EXPORT int32_t lean_image_width(lean_obj_arg img) {
+	auto data  = (image*) (
+		lean_get_external_data(img)
+	);
+	return data->w;
+}
+extern "C" LEAN_EXPORT int32_t lean_image_height(lean_obj_arg img) {
+	auto data  = (image*) (
+		lean_get_external_data(img)
+	);
+	return data->h;
+}
+extern "C" LEAN_EXPORT int32_t lean_image_channels(lean_obj_arg img) {
+	auto data  = (image*) (
+		lean_get_external_data(img)
+	);
+	return data->channels;
+}
+
+
+extern "C" LEAN_EXPORT lean_obj_res lean_glGenTextures() {
+	GLuint texture_id;
+	glGenTextures(1, &texture_id);
+	return lean_io_result_mk_ok(lean_box(texture_id));
+}
+
+
+extern "C" LEAN_EXPORT lean_obj_res lean_glBindTexture(int target, int texture_id) {
+	glBindTexture(target, texture_id);
+	return lean_io_result_mk_ok(lean_box(0));
+}
+extern "C" LEAN_EXPORT lean_obj_res lean_glTexParameteri(int target, int property, int param) {
+	glTexParameteri(target, property, param);
+	return lean_io_result_mk_ok(lean_box(0));
+}
+extern "C" LEAN_EXPORT lean_obj_res lean_load_image_to_gpu(lean_obj_arg img_box) {
+	auto data  = (image*) (
+		lean_get_external_data(img_box)
+	);
+	auto format = GL_RGBA;
+	if (data->channels == 3) {
+		format = GL_RGB;
+	}
+	glTexImage2D(
+		GL_TEXTURE_2D,
+		0,
+		format,
+		data->w,
+		data->h,
+		0,
+		format,
+		GL_UNSIGNED_BYTE,
+		data->data
+	);
+	return lean_io_result_mk_ok(lean_box(0));
+}
+
+extern "C" LEAN_EXPORT lean_obj_res lean_display_image(int32_t texture_id_box, int32_t width, int32_t height) {
+	ImGui::Image(texture_id_box, {(float)width, (float)height});
+	return lean_io_result_mk_ok(lean_box(0));
 }

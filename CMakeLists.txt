@@ -4,6 +4,10 @@ project (DIGL_libraries LANGUAGES CXX C)
 set(BUILD_SHARED_LIBS ON)
 
 add_subdirectory(deps)
+
+
+message(STATUS "SOIL2 SOURCE DIR " ${soil2_SOURCE_DIR})
+
 add_library(
 	DIGL_libraries
 	"dummy.cpp"
@@ -15,6 +19,11 @@ add_library(
 	"${PROJECT_SOURCE_DIR}/imgui/backends/imgui_impl_glfw.cpp"
 	"${PROJECT_SOURCE_DIR}/imgui/backends/imgui_impl_opengl3.cpp"
 	"${PROJECT_SOURCE_DIR}/imgui/misc/cpp/imgui_stdlib.cpp"
+	"${soil2_SOURCE_DIR}/src/SOIL2/SOIL2.c"
+	"${soil2_SOURCE_DIR}/src/SOIL2/wfETC.c"
+	"${soil2_SOURCE_DIR}/src/SOIL2/image_helper.c"
+	"${soil2_SOURCE_DIR}/src/SOIL2/image_DXT.c"
+	"${soil2_SOURCE_DIR}/src/SOIL2/image_array.c"
 )
 
 set_property(TARGET DIGL_libraries PROPERTY CXX_STANDARD 20)
@@ -31,6 +40,7 @@ target_include_directories(
 	PRIVATE
 	"${glew_SOURCE_DIR}/include"
 	"${glfw_SOURCE_DIR}/include"
+	"${soil2_SOURCE_DIR}/src/SOIL2"
 	"${PROJECT_SOURCE_DIR}/imgui"
 	"${PROJECT_SOURCE_DIR}/include"
 	"$ENV{LEAN_TOOLCHAIN_DIR}/include"

@@ -17,12 +17,3 @@ FetchContent_Declare(
 )
 
 FetchContent_MakeAvailable(glfw)
-
-# add_library(dependency_GLFW INTERFACE)
-
-# message(STATUS "glfw_SOURCE_DIR... " ${glfw_SOURCE_DIR})
-
-# target_include_directories(dependency_GLFW INTERFACE "${glfw_SOURCE_DIR}/include")
-# target_link_libraries(dependency_GLFW INTERFACE glfw)
-
-# message(STATUS "glfw_SOURCE_DIR... " ${glfw_SOURCE_DIR})
