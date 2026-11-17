@@ -180,6 +180,22 @@ static void generic_finalize(void * obj) {
 	fprintf(stdout, "Fin\n");
 }
 
+
+struct image {
+	int32_t w;
+	int32_t h;
+	int32_t channels;
+	uint8_t* data;
+};
+
+static void image_finalize(void * obj) {
+	auto data  = (image*) (obj);
+
+	delete[] data->data;
+	delete data;
+
+	fprintf(stdout, "Image deallocated\n");
+}
 static void generic_foreach(void *, b_lean_obj_arg) {
 	fprintf(stdout, "For each\n");
 }
@@ -295,12 +311,6 @@ extern "C" LEAN_EXPORT lean_obj_res lean_get_path() {
 	return lean_io_result_mk_ok(lean_str);
 }
 
-struct image {
-	int32_t w;
-	int32_t h;
-	int32_t channels;
-	uint8_t* data;
-};
 extern "C" LEAN_EXPORT lean_obj_res lean_read_image(b_lean_obj_arg path) {
 	printf("Allocate image array");
 	auto c_text = lean_string_cstr(path);
@@ -375,7 +385,57 @@ extern "C" LEAN_EXPORT lean_obj_res lean_load_image_to_gpu(lean_obj_arg img_box)
 	return lean_io_result_mk_ok(lean_box(0));
 }
 
-extern "C" LEAN_EXPORT lean_obj_res lean_display_image(int32_t texture_id_box, int32_t width, int32_t height) {
-	ImGui::Image(texture_id_box, {(float)width, (float)height});
+extern "C" LEAN_EXPORT lean_obj_res lean_display_image(
+	int32_t texture_id_box,
+	float width,
+	float height,
+	float u0,
+	float v0,
+	float u1,
+	float v1
+) {
+	ImGui::Image(
+		texture_id_box,
+		{(float)width, (float)height},
+		{u0, v0},
+		{u1, v1}
+	);
+	return lean_io_result_mk_ok(lean_box(0));
+}
+
+extern "C" LEAN_EXPORT lean_obj_res lean_BeginCombo(
+	b_lean_obj_arg label,
+	b_lean_obj_arg preview
+) {
+	auto c_label = lean_string_cstr(label);
+	auto c_preview = lean_string_cstr(preview);
+	auto result = ImGui::BeginCombo(
+		c_label,
+		c_preview
+	);
+	return lean_io_result_mk_ok(lean_box(result));
+}
+
+extern "C" LEAN_EXPORT lean_obj_res lean_Selectable(
+	b_lean_obj_arg label,
+	bool selected
+) {
+	auto c_label = lean_string_cstr(label);
+	auto result = ImGui::Selectable(
+		c_label,
+		selected
+	);
+	return lean_io_result_mk_ok(lean_box(result));
+}
+
+extern "C" LEAN_EXPORT lean_obj_res lean_SetItemDefaultFocus(
+) {
+	ImGui::SetItemDefaultFocus();
+	return lean_io_result_mk_ok(lean_box(0));
+}
+
+extern "C" LEAN_EXPORT lean_obj_res lean_EndCombo(
+) {
+	ImGui::EndCombo();
 	return lean_io_result_mk_ok(lean_box(0));
 }

@@ -12,7 +12,6 @@ import Digl.ImGui
 
 open Std.WP Lean.Order
 open Std.Do
-
 set_option experimental.vcgen true
 
 @[extern "init_lean_classes"]
@@ -65,6 +64,8 @@ structure ImageFile where
   path : System.FilePath
   image : @& Image.Ptr
   texture_id : Int32
+  frames : Int32
+  frame : Int32
 
 structure Paths where
   v2_path : Option System.FilePath
@@ -181,12 +182,12 @@ def make_program_state (w : GLFWwindow_ptr) : ProgramState := {
 def Window
   (label : String)
   (w : ProgramState)
-  (content : (w : ProgramState) → IO ProgramState)
+  (content : StateT ProgramState IO Unit)
 : IO ProgramState := do
   ImGui._Begin label
   let w := ← content w
   ImGui._End
-  pure w
+  pure w.2
 
 def WindowIf
   (label : String)
@@ -480,7 +481,8 @@ def UploadImageToGPU (data : Image.Ptr) : IO Int32 := do
   gl.LoadImage data
   pure tex
 
-def LoadSprite (w : ProgramState) (p : System.FilePath) : OptionT IO ImageFile := do
+def LoadSprite (p : System.FilePath) (frames : Int32) : OptionT (StateT ProgramState IO) ImageFile := do
+  let w := ← get
   match w.paths.v2_path, w.paths.selected_mod with
   | some to_v2, some mod =>
     let data :=  (← (Image.Read (to_v2 / mod.content_path.run / p).toString))
@@ -488,16 +490,19 @@ def LoadSprite (w : ProgramState) (p : System.FilePath) : OptionT IO ImageFile :
       path := mod.content_path.run / p
       image := data
       texture_id := ←UploadImageToGPU data
+      frames := frames
+      frame := 0
     }
   | _, _ => failure
 
 
-def SpriteDescription (s : V2_GFX.SpriteType) (w : ProgramState)  : IO ProgramState := do
+def SpriteDescription (s : V2_GFX.SpriteType)  : StateT ProgramState IO Unit  := do
+  let w := ← get
   if h: s.name.isSome ∧ s.frames.isSome then
     let name := s.name.get h.1
     let frames := s.frames.get h.2
     if ¬ (name.startsWith w.filters.sprites.starts_with ∧ frames ≥ w.filters.sprites.frames) then
-      pure w
+      pure ()
     else
       let mut selected_path : Option System.FilePath := none
       if h : s.texture_path.isSome then
@@ -512,41 +517,73 @@ def SpriteDescription (s : V2_GFX.SpriteType) (w : ProgramState)  : IO ProgramSt
         ImGui._Text ("Frames: default (1)")
 
       if h : selected_path.isSome then
-        pure {w with paths.selected_sprite := ← LoadSprite w (selected_path.get h)}
+        let sprite_data := ← (LoadSprite (selected_path.get h) frames.toInt32)
+        match sprite_data with
+        | some value =>
+          modify (fun x => {x with paths.selected_sprite := do value })
+        | none =>
+          pure ()
       else
-        pure w
+        pure ()
   else
-    pure w
+    pure ()
 
 
 
-def SpritesList (w : ProgramState) : IO ProgramState := do
+def SpritesList : StateT ProgramState IO Unit  := do
+  let w := ← get
   let desc := w.paths.selected_mod
   ImGui._Text "Sprites list"
   match desc with
   | none =>
     ImGui._Text "Select a mod."
-    pure w
+    pure ()
   | some d =>
     if d.sprite_types.size = 0 then
       ImGui._Text "There are no sprites in the mod or you haven't loaded them."
-      pure w
+      pure ()
     else
-      d.sprite_types.foldrM (SpriteDescription) w
+      d.sprite_types.foldrM (fun x _ => (SpriteDescription x)) ()
+      pure ()
 
-def SpriteEditor (w : ProgramState) : IO ProgramState := do
+def FrameSelection (frame : Nat) (selected : ImageFile)  : StateT ProgramState IO Unit := do
+  match frame with
+  | 0 => pure ()
+  | k + 1 =>
+    let mut select_frame := selected.frame
+    if ←(ImGui.Selectable (toString k) (k.toInt32 == selected.frame)) then
+      select_frame := k.toInt32
+      modify (fun x => {x with paths.selected_sprite := some {selected with frame := k.toInt32}})
+    if k.toInt32 == select_frame then
+      ImGui.SetDefaultFocus
+    FrameSelection k selected
+
+def SpriteEditor : StateT ProgramState IO Unit := do
+  let w := ←get
   match w.paths.selected_sprite with
-  | none => pure w
+  | none => pure ()
   | some s =>
-    ImGui.DisplayImage s.texture_id (Image.Width s.image) (Image.Height s.image)
-    pure w
+    (ImGui.DropDownWidget IO ProgramState "Select frame: " (toString s.frame) (
+      FrameSelection s.frames.toNatClampNeg s
+    ))
+    let width := Image.Width s.image
+    let height := Image.Height s.image
+    ImGui.DisplayImage
+      s.texture_id
+      (width.toFloat32 / (s.frames.toFloat32))
+      height.toFloat32
+      (s.frame.toFloat32 / s.frames.toFloat32) 0
+      ((s.frame.toFloat32 + 1) / s.frames.toFloat32) 1
+    ImGui._Text ((toString (width / s.frames)) ++ "x" ++ (toString height))
+    pure ()
 
-def ChooseFolder (w : ProgramState) : IO ProgramState := do
+def ChooseFolder : StateT ProgramState IO Unit := do
+  let w := ← get
   let button_result := ←ImGui._Button "Choose V2 folder"
   if button_result then
     let path : System.FilePath := ←QueryPathString
     let mods_path := path / "mod"
-    pure {
+    set {
       window := w.window
       paths := {
         v2_path := path
@@ -557,9 +594,10 @@ def ChooseFolder (w : ProgramState) : IO ProgramState := do
       errors := {
         mod_description := ["No mod description was selected"]
       }
+      : ProgramState
     }
   else
-    pure w
+    pure ()
 
 def DrawWindow (w : ProgramState) : IO ProgramState := do
   -- IO.println s!"Frame"
