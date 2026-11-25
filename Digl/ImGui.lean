@@ -185,13 +185,6 @@ def DropDownWidget
   else
     pure ()
 
-def temp : ImGuiContext := {
-  dropdown_started := False
-  mouse_over_dropdown := False
-  mouse_over_selection := False
-  valid_state := False
-}
-
 abbrev content_spec (content : StateT ImGuiContext Id Unit)
   :=
   ∀ w : ImGuiContext,

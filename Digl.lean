@@ -65,13 +65,18 @@ structure ImageFile where
   image : @& Image.Ptr
   texture_id : Int32
   frames : Int32
-  frame : Int32
+  -- frame : Int32
+
+structure TemporaryImageFile where
+  image : @& Image.Ptr
+  texture_id : Int32
 
 structure Paths where
   v2_path : Option System.FilePath
   local_mods : Array System.FilePath
   selected_mod : Option (Vic2Mod Id)
-  selected_sprite : Option ImageFile
+  selected_sprites : List ImageFile
+  selected_frame : Int32
 
 
 structure ModelState where
@@ -98,6 +103,9 @@ structure ProgramState where
   filters : FiltersCollection := {
 
   }
+
+  loaded_image : Option ImageFile := none
+  downscaled_image : Option TemporaryImageFile := none
 
 
 -- def NothingModel (s : WindowState) : WindowState := s
@@ -161,13 +169,17 @@ end ImGui
 
 @[extern "lean_get_path"]
 opaque QueryPathString : IO String
-
+@[extern "lean_get_image_path"]
+opaque QueryImageString : IO String
+@[extern "lean_get_save_path"]
+opaque QuerySavePathString : IO String
 
 def make_paths : Paths := {
   v2_path := none
   local_mods := Array.empty
   selected_mod := none
-  selected_sprite := none
+  selected_sprites := []
+  selected_frame := 0
 }
 
 def make_program_state (w : GLFWwindow_ptr) : ProgramState := {
@@ -481,6 +493,11 @@ def UploadImageToGPU (data : Image.Ptr) : IO Int32 := do
   gl.LoadImage data
   pure tex
 
+def CommitImageToGPU (tex : Int32) (data : Image.Ptr) : IO Unit := do
+  gl.BindTexture gl.GL_TEXTURE_2D tex
+  gl.LoadImage data
+  pure ()
+
 def LoadSprite (p : System.FilePath) (frames : Int32) : OptionT (StateT ProgramState IO) ImageFile := do
   let w := ← get
   match w.paths.v2_path, w.paths.selected_mod with
@@ -491,7 +508,6 @@ def LoadSprite (p : System.FilePath) (frames : Int32) : OptionT (StateT ProgramS
       image := data
       texture_id := ←UploadImageToGPU data
       frames := frames
-      frame := 0
     }
   | _, _ => failure
 
@@ -520,7 +536,7 @@ def SpriteDescription (s : V2_GFX.SpriteType)  : StateT ProgramState IO Unit  :=
         let sprite_data := ← (LoadSprite (selected_path.get h) frames.toInt32)
         match sprite_data with
         | some value =>
-          modify (fun x => {x with paths.selected_sprite := do value })
+          modify (fun x => {x with paths.selected_sprites :=  (value :: x.paths.selected_sprites) })
         | none =>
           pure ()
       else
@@ -546,36 +562,89 @@ def SpritesList : StateT ProgramState IO Unit  := do
       d.sprite_types.foldrM (fun x _ => (SpriteDescription x)) ()
       pure ()
 
-def FrameSelection (frame : Nat) (selected : ImageFile)  : StateT ProgramState IO Unit := do
+def FrameSelection (frame : Nat) (current_frame : Int32) : StateT ProgramState IO Unit := do
   match frame with
   | 0 => pure ()
   | k + 1 =>
-    let mut select_frame := selected.frame
-    if ←(ImGui.Selectable (toString k) (k.toInt32 == selected.frame)) then
+    let mut select_frame := current_frame
+    if ←(ImGui.Selectable (toString k) (k.toInt32 == current_frame)) then
       select_frame := k.toInt32
-      modify (fun x => {x with paths.selected_sprite := some {selected with frame := k.toInt32}})
+      modify (fun x => {x with paths.selected_frame := k.toInt32})
     if k.toInt32 == select_frame then
       ImGui.SetDefaultFocus
-    FrameSelection k selected
+    FrameSelection k select_frame
+
+def ImageDownscaleAction (img : Image.Ptr) (width height : Int32) : StateT ProgramState IO Unit := do
+  let w := ← get
+  if w.downscaled_image.isNone then
+    let img₂ptr := ←Image.ScaleDown img width height
+    let uploaded := ←(UploadImageToGPU img₂ptr)
+    modify (fun x => { x with downscaled_image := some {
+      image := img₂ptr
+      texture_id := uploaded
+    }})
+  else
+    pure ()
+
+def DisplaySprites (data : List ImageFile) (frame : Int32) : IO Unit := do
+  match data with
+  | [] => pure ()
+  | head :: tail =>
+    let width := Image.Width head.image
+    let height := Image.Height head.image
+    if (frame < head.frames) then
+      ImGui.DisplayImage
+        head.texture_id
+        (width.toFloat32 / (head.frames.toFloat32))
+        height.toFloat32
+        (frame.toFloat32 / head.frames.toFloat32) 0
+        ((frame.toFloat32 + 1) / head.frames.toFloat32) 1
+      ImGui._Text ((toString (width / head.frames)) ++ "x" ++ (toString height))
+    DisplaySprites tail frame
+
+def PasteImageToList (data : List ImageFile) (to_paste : ImageFile) (frame : Int32) : IO Unit := do
+  match data with
+  | [] => pure ()
+  | head :: tail =>
+    let width := Image.Width head.image
+    let height := Image.Height head.image
+    let width_scaled := width / (head.frames)
+    let source_scaled := ←Image.ScaleDown to_paste.image width_scaled height
+    if (frame < head.frames) then
+      Image.Paste source_scaled head.image (frame * width_scaled) 0
+      CommitImageToGPU head.texture_id head.image
+    PasteImageToList tail to_paste frame
+
+
+def WriteListDDS (data : List ImageFile) (v2_path : System.FilePath) : IO Unit := do
+  match data with
+  | [] => pure ()
+  | head :: tail =>
+    Image.WriteDDS (v2_path / head.path).toString head.image
+    WriteListDDS tail v2_path
 
 def SpriteEditor : StateT ProgramState IO Unit := do
-  let w := ←get
-  match w.paths.selected_sprite with
-  | none => pure ()
-  | some s =>
-    (ImGui.DropDownWidget IO ProgramState "Select frame: " (toString s.frame) (
-      FrameSelection s.frames.toNatClampNeg s
+  match (←get).paths.selected_sprites with
+  | [] => pure ()
+  | head :: tail =>
+    (ImGui.DropDownWidget IO ProgramState "Select frame: " (toString (←get).paths.selected_frame) (
+      FrameSelection head.frames.toNatClampNeg (← get).paths.selected_frame
     ))
-    let width := Image.Width s.image
-    let height := Image.Height s.image
-    ImGui.DisplayImage
-      s.texture_id
-      (width.toFloat32 / (s.frames.toFloat32))
-      height.toFloat32
-      (s.frame.toFloat32 / s.frames.toFloat32) 0
-      ((s.frame.toFloat32 + 1) / s.frames.toFloat32) 1
-    ImGui._Text ((toString (width / s.frames)) ++ "x" ++ (toString height))
-    pure ()
+    DisplaySprites (head :: tail) (← get).paths.selected_frame
+
+    match (←get).loaded_image with
+    | none =>
+      ImGui._Text "Load image to be able to replace the sprite"
+    | some source =>
+      if ←ImGui._Button "Replace image" then
+        PasteImageToList (← get).paths.selected_sprites source (← get).paths.selected_frame
+    -- pure ()
+    let p := (← get).paths.v2_path
+    if h : p.isSome then
+      if ←ImGui._Button "Rewrite DDS image" then
+        WriteListDDS (← get).paths.selected_sprites (p.get h)
+    else
+      ImGui._Text "Mod folder is not specified, saving DDS files is impossible."
 
 def ChooseFolder : StateT ProgramState IO Unit := do
   let w := ← get
@@ -589,7 +658,8 @@ def ChooseFolder : StateT ProgramState IO Unit := do
         v2_path := path
         local_mods := ←(GatherMods 2 mods_path)
         selected_mod := none
-        selected_sprite := none
+        selected_sprites := []
+        selected_frame := 0
       }
       errors := {
         mod_description := ["No mod description was selected"]
@@ -599,6 +669,59 @@ def ChooseFolder : StateT ProgramState IO Unit := do
   else
     pure ()
 
+def PickImage : StateT ProgramState IO Unit := do
+  if ←ImGui._Button "Load image" then
+    let path : System.FilePath := ←QueryImageString
+    let data := ← (Image.Read path.toString)
+    let texture_id := ←(UploadImageToGPU data)
+    modify (fun x => {x with loaded_image := some {
+      path := path
+      image := data
+      texture_id := texture_id
+      frames := 1
+    }})
+    modify (fun x => {x with downscaled_image := none })
+  else
+    pure ()
+
+#check Option.get!
+#check Option.get!_none
+
+
+
+def ImageDownscale (w : ProgramState) (h : w.loaded_image.isSome = true) : IO ProgramState := do
+  let img := w.loaded_image.get h
+  let width := Image.Width img.image
+  let height := Image.Height img.image
+  -- ImGui._Text "Original"
+  -- ImGui.DisplayImage
+  --     img.texture_id
+  --     (width.toFloat32)
+  --     (height.toFloat32)
+  --     0 0
+  --     1 1
+  ImGui._Text "Original Filtered"
+  ImGui.DisplayImage
+      img.texture_id
+      (width.toFloat32 / 4)
+      (height.toFloat32 / 4)
+      0 0
+      1 1
+  let (_, w) := ←((ImageDownscaleAction img.image (width / 4) (height / 4)).run w)
+
+  match w.downscaled_image with
+  | some img₂ =>
+    ImGui._Text "Downscaled"
+    ImGui.DisplayImage
+      img₂.texture_id
+      (width.toFloat32 / 4)
+      (height.toFloat32 / 4)
+      0 0
+      1 1
+    pure w
+  | none => pure w
+
+
 def DrawWindow (w : ProgramState) : IO ProgramState := do
   -- IO.println s!"Frame"
   StartFrame
@@ -606,6 +729,8 @@ def DrawWindow (w : ProgramState) : IO ProgramState := do
 
   -- gather computations into wio
   let w := ←Window "Path picker" w  ChooseFolder
+  let w := ←Window "Image picker" w PickImage
+  let w := ←WindowIf "Downscaled preview" w _ ImageDownscale
   let w := ←WindowIf "Vic2 Mods" w _ ShowMods
   let w := ←WindowIfElse "Selected mod" w ValidModSelection ModDescription ModDescriptionErrors
   let w := ←Window "Sprites table" w SpritesList
